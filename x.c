@@ -5,6 +5,7 @@
 #include <locale.h>
 #include <signal.h>
 #include <sys/select.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 #include <libgen.h>
@@ -34,6 +35,7 @@ typedef struct {
 	void (*func)(const Arg *);
 	const Arg arg;
 	uint  release;
+	int  altscrn;  /* 0: don't care, -1: not alt screen, 1: alt screen */
 } MouseShortcut;
 
 typedef struct {
@@ -216,6 +218,7 @@ static void (*handler[LASTEvent])(XEvent *) = {
 };
 
 /* Globals */
+static int plumbsel;
 static DC dc;
 static XWindow xw;
 static XSelection xsel;
@@ -455,6 +458,7 @@ mouseaction(XEvent *e, uint release)
 	for (ms = mshortcuts; ms < mshortcuts + LEN(mshortcuts); ms++) {
 		if (ms->release == release &&
 		    ms->button == e->xbutton.button &&
+		    (!ms->altscrn || (ms->altscrn == (tisaltscr() ? 1 : -1))) &&
 		    (match(ms->mod, state) ||  /* exact or forced */
 		     match(ms->mod, state & ~forcemousemod))) {
 			ms->func(&(ms->arg));
@@ -695,6 +699,37 @@ xsetsel(char *str)
 }
 
 void
+plumbinit()
+{
+	for(plumbsel = 0; plumb_cmd[plumbsel]; plumbsel++);
+}
+
+void
+plumb(char *sel) {
+	if (sel == NULL)
+		return;
+	char cwd[PATH_MAX];
+	pid_t child;
+	if (subprocwd(cwd) != 0)
+		return;
+
+	plumb_cmd[plumbsel] = sel;
+
+	switch(child = fork()) {
+		case -1:
+			return;
+		case 0:
+			if (chdir(cwd) != 0)
+				exit(1);
+			if (execvp(plumb_cmd[0], plumb_cmd) == -1)
+				exit(1);
+			exit(0);
+		default:
+			waitpid(child, NULL, 0);
+	}
+}
+
+void
 brelease(XEvent *e)
 {
 	int btn = e->xbutton.button;
@@ -711,6 +746,8 @@ brelease(XEvent *e)
 		return;
 	if (btn == Button1)
 		mousesel(e, 1);
+	else if (btn == Button3)
+		plumb(xsel.primary);
 }
 
 void
@@ -2088,6 +2125,7 @@ main(int argc, char *argv[])
 	} ARGEND;
 
 run:
+	plumbinit();
 	if (argc > 0) /* eat all remaining arguments */
 		opt_cmd = argv;
 
